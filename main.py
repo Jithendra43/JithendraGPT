@@ -46,18 +46,6 @@ except ImportError:
     PYPDF2_LOADER_AVAILABLE = False
 
 try:
-    from langchain_community.document_loaders import PDFPlumberLoader
-    PDFPLUMBER_LOADER_AVAILABLE = True
-except ImportError:
-    PDFPLUMBER_LOADER_AVAILABLE = False
-
-try:
-    from langchain_community.document_loaders import PyMuPDFLoader
-    PYMUPDF_LOADER_AVAILABLE = True
-except ImportError:
-    PYMUPDF_LOADER_AVAILABLE = False
-
-try:
     from langchain_community.document_loaders import Docx2txtLoader
     DOCX_LOADER_AVAILABLE = True
 except ImportError:
@@ -119,17 +107,21 @@ def setup_vectorstore(persist_directory: str = "vector_db_dir"):
             try:
                 embeddings = HuggingFaceEmbeddings(
                     model_name="sentence-transformers/all-MiniLM-L6-v2",
-                    model_kwargs={
-                        'device': 'cpu',
-                        'trust_remote_code': False
-                    },
+                    model_kwargs={'device': 'cpu'},
                     encode_kwargs={'normalize_embeddings': True}
                 )
             except Exception as embedding_error:
                 # Fallback to basic initialization if advanced options fail
-                embeddings = HuggingFaceEmbeddings(
-                    model_name="sentence-transformers/all-MiniLM-L6-v2"
-                )
+                try:
+                    embeddings = HuggingFaceEmbeddings(
+                        model_name="sentence-transformers/all-MiniLM-L6-v2",
+                        model_kwargs={'device': 'cpu'}
+                    )
+                except Exception as basic_error:
+                    # Final fallback to most basic initialization
+                    embeddings = HuggingFaceEmbeddings(
+                        model_name="sentence-transformers/all-MiniLM-L6-v2"
+                    )
             
             if VECTOR_STORE_TYPE == "FAISS":
                 # Try to load existing FAISS index
@@ -235,12 +227,6 @@ def load_document_with_fallback(file_path):
         if PYPDF2_LOADER_AVAILABLE:
             loaders_to_try.append(('PyPDF2Loader', lambda: PyPDF2Loader(file_path)))
         
-        if PDFPLUMBER_LOADER_AVAILABLE:
-            loaders_to_try.append(('PDFPlumberLoader', lambda: PDFPlumberLoader(file_path)))
-        
-        if PYMUPDF_LOADER_AVAILABLE:
-            loaders_to_try.append(('PyMuPDFLoader', lambda: PyMuPDFLoader(file_path)))
-        
         # Only try UnstructuredFileLoader as last resort for PDFs
         loaders_to_try.append(('UnstructuredFileLoader', lambda: UnstructuredFileLoader(file_path)))
     
@@ -329,17 +315,21 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
         try:
             embeddings = HuggingFaceEmbeddings(
                 model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={
-                    'device': 'cpu',
-                    'trust_remote_code': False
-                },
+                model_kwargs={'device': 'cpu'},
                 encode_kwargs={'normalize_embeddings': True}
             )
         except Exception as embedding_error:
             # Fallback to basic initialization if advanced options fail
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
-            )
+            try:
+                embeddings = HuggingFaceEmbeddings(
+                    model_name="sentence-transformers/all-MiniLM-L6-v2",
+                    model_kwargs={'device': 'cpu'}
+                )
+            except Exception as basic_error:
+                # Final fallback to most basic initialization
+                embeddings = HuggingFaceEmbeddings(
+                    model_name="sentence-transformers/all-MiniLM-L6-v2"
+                )
         
         if VECTOR_STORE_TYPE == "FAISS":
             # Create or update FAISS index
@@ -428,7 +418,7 @@ def validate_setup():
     
     # Check document loaders
     loader_status = []
-    pdf_loaders = sum([PDF_LOADER_AVAILABLE, PYPDF2_LOADER_AVAILABLE, PDFPLUMBER_LOADER_AVAILABLE, PYMUPDF_LOADER_AVAILABLE])
+    pdf_loaders = sum([PDF_LOADER_AVAILABLE, PYPDF2_LOADER_AVAILABLE])
     if pdf_loaders > 0:
         loader_status.append(f"PDF ✅ ({pdf_loaders} loaders)")
     else:

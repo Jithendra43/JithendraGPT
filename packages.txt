@@ -3,9 +3,4 @@ python3-pyaudio
 ffmpeg
 libsndfile1
 poppler-utils
-tesseract-ocr
-libreoffice
-pandoc
-libmagic1
-libgl1-mesa-glx
-libglib2.0-0 
+libmagic1 
