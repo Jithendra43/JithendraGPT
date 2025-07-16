@@ -274,7 +274,6 @@ def load_document_with_fallback(file_path):
             loader = loader_func()
             docs = loader.load()
             if docs:  # Only return if we got actual documents
-                st.success(f"✅ Loaded {os.path.basename(file_path)} using {loader_name}")
                 return docs
         except Exception as e:
             # Only show warning for unstructured loader failures, not for missing optional loaders
@@ -320,9 +319,7 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
             st.error("No documents could be processed successfully.")
             return None
         
-        # Display processing results
-        if successful_files:
-            st.success(f"✅ Successfully processed: {', '.join(successful_files)}")
+        # Only show warnings for failed files, not success messages
         if failed_files:
             st.warning(f"⚠️ Failed to process: {', '.join(failed_files)}")
         
@@ -352,12 +349,10 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
                 if st.session_state.vectorstore is None:
                     # Create new FAISS index
                     vectordb = FAISS.from_documents(text_chunks, embeddings)
-                    st.info(f"📊 Created new FAISS index with {len(text_chunks)} chunks")
                 else:
                     # Add to existing FAISS index
                     vectordb = st.session_state.vectorstore
                     vectordb.add_documents(text_chunks)
-                    st.info(f"📊 Added {len(text_chunks)} chunks to existing FAISS index")
                 
                 # Save FAISS index
                 vectordb.save_local(faiss_index_path)
@@ -381,7 +376,6 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
                 from langchain_chroma import Chroma
                 vectordb = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
                 vectordb.add_documents(text_chunks)
-                st.info(f"📊 Added {len(text_chunks)} chunks to ChromaDB")
                 return vectordb
             except Exception as chroma_error:
                 st.error(f"ChromaDB initialization failed: {str(chroma_error)}")
@@ -402,7 +396,6 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
                         embedding_function=embeddings
                     )
                     vectordb.add_documents(text_chunks)
-                    st.info(f"📊 Added {len(text_chunks)} chunks to ChromaDB (alternative setup)")
                     return vectordb
                 except Exception as alt_chroma_error:
                     st.error(f"All ChromaDB methods failed: {str(alt_chroma_error)}")
@@ -558,32 +551,14 @@ if uploaded_files:
     with st.spinner("Processing documents..."):
         result = vectorize_new_documents(uploaded_files, persist_directory="vector_db_dir")
         if result:
-            st.sidebar.success("Documents successfully vectorized!")
+            st.sidebar.success("✅ Documents processed successfully!")
             st.session_state.vectorstore = result
             st.session_state.pop("conversational_chain", None)
 
 if st.sidebar.button("Clear Chat History"):
     clear_chat_history()
 
-# System Status
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔧 System Status")
-setup_status = validate_setup()
-
-if setup_status["issues"]:
-    for issue in setup_status["issues"]:
-        st.sidebar.error(issue)
-
-st.sidebar.markdown(f"**Vector Store:** {setup_status['vector_store']}")
-st.sidebar.markdown(f"**API Keys:** {setup_status['api_keys']}")
-
-with st.sidebar.expander("📄 Document Loaders"):
-    for loader in setup_status["loaders"]:
-        st.write(loader)
-
-with st.sidebar.expander("🎤 Speech Features"):
-    for speech in setup_status["speech"]:
-        st.write(speech)
+# Clean interface - system status removed for better UX
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("Developed by **Jithendra Pavuluri**")
