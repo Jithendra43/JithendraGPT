@@ -40,6 +40,24 @@ except ImportError:
     PDF_LOADER_AVAILABLE = False
 
 try:
+    from langchain_community.document_loaders import PyPDF2Loader
+    PYPDF2_LOADER_AVAILABLE = True
+except ImportError:
+    PYPDF2_LOADER_AVAILABLE = False
+
+try:
+    from langchain_community.document_loaders import PDFPlumberLoader
+    PDFPLUMBER_LOADER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_LOADER_AVAILABLE = False
+
+try:
+    from langchain_community.document_loaders import PyMuPDFLoader
+    PYMUPDF_LOADER_AVAILABLE = True
+except ImportError:
+    PYMUPDF_LOADER_AVAILABLE = False
+
+try:
     from langchain_community.document_loaders import Docx2txtLoader
     DOCX_LOADER_AVAILABLE = True
 except ImportError:
@@ -202,15 +220,28 @@ def create_conversational_chain(vectorstore, model_choice, temperature=0.5, prov
         return None
 
 def load_document_with_fallback(file_path):
-    """Load document with multiple fallback options"""
+    """Load document with multiple fallback options, prioritizing reliable loaders"""
     file_extension = os.path.splitext(file_path)[1].lower()
     
     # Try different loaders based on file type
     loaders_to_try = []
     
     if file_extension == '.pdf':
+        # Try multiple PDF loaders in order of reliability
         if PDF_LOADER_AVAILABLE:
             loaders_to_try.append(('PyPDFLoader', lambda: PyPDFLoader(file_path)))
+        
+        # Add additional PDF loaders
+        if PYPDF2_LOADER_AVAILABLE:
+            loaders_to_try.append(('PyPDF2Loader', lambda: PyPDF2Loader(file_path)))
+        
+        if PDFPLUMBER_LOADER_AVAILABLE:
+            loaders_to_try.append(('PDFPlumberLoader', lambda: PDFPlumberLoader(file_path)))
+        
+        if PYMUPDF_LOADER_AVAILABLE:
+            loaders_to_try.append(('PyMuPDFLoader', lambda: PyMuPDFLoader(file_path)))
+        
+        # Only try UnstructuredFileLoader as last resort for PDFs
         loaders_to_try.append(('UnstructuredFileLoader', lambda: UnstructuredFileLoader(file_path)))
     
     elif file_extension == '.docx':
@@ -230,7 +261,7 @@ def load_document_with_fallback(file_path):
                 content = f.read()
             from langchain.schema import Document
             return [Document(page_content=content, metadata={"source": file_path})]
-        except:
+        except Exception as txt_error:
             loaders_to_try.append(('UnstructuredFileLoader', lambda: UnstructuredFileLoader(file_path)))
     
     else:
@@ -243,13 +274,16 @@ def load_document_with_fallback(file_path):
             loader = loader_func()
             docs = loader.load()
             if docs:  # Only return if we got actual documents
+                st.success(f"✅ Loaded {os.path.basename(file_path)} using {loader_name}")
                 return docs
         except Exception as e:
-            st.warning(f"Failed to load {os.path.basename(file_path)} with {loader_name}: {str(e)}")
+            # Only show warning for unstructured loader failures, not for missing optional loaders
+            if "UnstructuredFileLoader" in loader_name or "partition_pdf" in str(e):
+                st.warning(f"⚠️ {loader_name} failed for {os.path.basename(file_path)}: {str(e)}")
             continue
     
     # If all loaders fail, create a basic document with error message
-    st.error(f"Could not load {os.path.basename(file_path)}. Please check the file format.")
+    st.error(f"❌ Could not load {os.path.basename(file_path)}. Please check the file format.")
     return []
 
 def vectorize_new_documents(files, persist_directory="vector_db_dir"):
@@ -401,10 +435,11 @@ def validate_setup():
     
     # Check document loaders
     loader_status = []
-    if PDF_LOADER_AVAILABLE:
-        loader_status.append("PDF ✅")
+    pdf_loaders = sum([PDF_LOADER_AVAILABLE, PYPDF2_LOADER_AVAILABLE, PDFPLUMBER_LOADER_AVAILABLE, PYMUPDF_LOADER_AVAILABLE])
+    if pdf_loaders > 0:
+        loader_status.append(f"PDF ✅ ({pdf_loaders} loaders)")
     else:
-        loader_status.append("PDF ⚠️")
+        loader_status.append("PDF ❌")
     
     if DOCX_LOADER_AVAILABLE:
         loader_status.append("DOCX ✅")
