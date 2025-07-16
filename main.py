@@ -37,12 +37,10 @@ VECTOR_STORE_TYPE = None
 try:
     from langchain_community.vectorstores import FAISS
     VECTOR_STORE_TYPE = "FAISS"
-    st.success("✅ Using FAISS vector store (recommended for cloud deployment)")
 except ImportError:
     try:
         from langchain_chroma import Chroma
         VECTOR_STORE_TYPE = "CHROMA"
-        st.info("Using ChromaDB vector store")
     except ImportError:
         st.error("❌ No vector store available. Please check your dependencies.")
         st.stop()
@@ -80,11 +78,21 @@ def setup_vectorstore(persist_directory: str = "vector_db_dir"):
     """Setup vector store with FAISS priority and ChromaDB fallback"""
     if "vectorstore" not in st.session_state:
         try:
-            # Initialize embeddings
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'}
-            )
+            # Initialize embeddings with better error handling
+            try:
+                embeddings = HuggingFaceEmbeddings(
+                    model_name="sentence-transformers/all-MiniLM-L6-v2",
+                    model_kwargs={
+                        'device': 'cpu',
+                        'trust_remote_code': False
+                    },
+                    encode_kwargs={'normalize_embeddings': True}
+                )
+            except Exception as embedding_error:
+                # Fallback to basic initialization if advanced options fail
+                embeddings = HuggingFaceEmbeddings(
+                    model_name="sentence-transformers/all-MiniLM-L6-v2"
+                )
             
             if VECTOR_STORE_TYPE == "FAISS":
                 # Try to load existing FAISS index
@@ -96,15 +104,12 @@ def setup_vectorstore(persist_directory: str = "vector_db_dir"):
                             embeddings, 
                             allow_dangerous_deserialization=True
                         )
-                        st.info("📂 Loaded existing FAISS vector database")
                     except Exception as e:
-                        st.warning(f"Could not load existing FAISS index: {e}")
-                        # Create empty FAISS index
+                        # Create empty FAISS index if loading fails
                         st.session_state.vectorstore = None
                 else:
                     # Create empty FAISS index - will be populated when documents are uploaded
                     st.session_state.vectorstore = None
-                    st.info("📝 FAISS vector store ready - upload documents to begin")
             
             elif VECTOR_STORE_TYPE == "CHROMA":
                 # Fallback to ChromaDB
@@ -115,7 +120,6 @@ def setup_vectorstore(persist_directory: str = "vector_db_dir"):
                         embedding_function=embeddings
                     )
                 except Exception as chroma_error:
-                    st.error(f"ChromaDB initialization failed: {str(chroma_error)}")
                     # Try alternative ChromaDB initialization
                     import chromadb
                     from chromadb.config import Settings
@@ -134,7 +138,6 @@ def setup_vectorstore(persist_directory: str = "vector_db_dir"):
                 
         except Exception as e:
             st.error(f"Error setting up vector store: {str(e)}")
-            st.info("Please try refreshing the page or contact support if the issue persists.")
             return None
     
     return st.session_state.vectorstore
@@ -202,10 +205,20 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
         text_splitter = CharacterTextSplitter(chunk_size=2000, chunk_overlap=500)
         text_chunks = text_splitter.split_documents(all_docs)
         
-        embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={'device': 'cpu'}
-        )
+        try:
+            embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                model_kwargs={
+                    'device': 'cpu',
+                    'trust_remote_code': False
+                },
+                encode_kwargs={'normalize_embeddings': True}
+            )
+        except Exception as embedding_error:
+            # Fallback to basic initialization if advanced options fail
+            embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2"
+            )
         
         if VECTOR_STORE_TYPE == "FAISS":
             # Create or update FAISS index
@@ -299,11 +312,7 @@ st.set_page_config(
 st.markdown("<h1 style='text-align: center;'>JithendraGPT: AI-Powered Document Insight Engine</h1>", unsafe_allow_html=True)
 st.markdown("#### How can I assist you today?")
 
-# Display vector store status
-if VECTOR_STORE_TYPE:
-    st.sidebar.success(f"🔧 Vector Store: {VECTOR_STORE_TYPE}")
-else:
-    st.sidebar.error("❌ No vector store available")
+# Vector store is ready - no need to display status messages
 
 # Check for API keys
 if not groq_api_key and not openai_api_key:
@@ -462,18 +471,11 @@ if user_input:
                 st.error(f"Error generating response: {str(e)}")
                 st.session_state.chat_history.append({"role": "assistant", "content": "I apologize, but I encountered an error while processing your request. Please try again."})
 
-# Show helpful message if no documents uploaded
+# Show clean welcome message only if no documents uploaded
 if st.session_state.vectorstore is None and not uploaded_files:
-    st.info("👋 Welcome to JithendraGPT! Please upload documents using the sidebar to get started.")
     st.markdown("""
-    ### 📚 Supported File Types:
-    - PDF documents
-    - Word documents (DOCX)
-    - Text files (TXT)
-    - CSV files
-    
-    ### 🚀 How to Use:
-    1. Upload your documents using the sidebar
-    2. Wait for processing to complete
-    3. Start asking questions about your documents!
-    """)
+    <div style="text-align: center; padding: 2rem; background-color: #f0f2f6; border-radius: 10px; margin: 1rem 0;">
+        <h3>🚀 Welcome to JithendraGPT!</h3>
+        <p>Upload documents using the sidebar to start chatting with your AI assistant.</p>
+    </div>
+    """, unsafe_allow_html=True)
