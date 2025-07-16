@@ -304,7 +304,6 @@ def transcribe_speech():
 # -------------------------------------
 st.set_page_config(
     page_title="JithendraGPT", 
-    page_icon="📚", 
     layout="centered",
     initial_sidebar_state="expanded"
 )
@@ -471,11 +470,3 @@ if user_input:
                 st.error(f"Error generating response: {str(e)}")
                 st.session_state.chat_history.append({"role": "assistant", "content": "I apologize, but I encountered an error while processing your request. Please try again."})
 
-# Show clean welcome message only if no documents uploaded
-if st.session_state.vectorstore is None and not uploaded_files:
-    st.markdown("""
-    <div style="text-align: center; padding: 2rem; background-color: #f0f2f6; border-radius: 10px; margin: 1rem 0;">
-        <h3>🚀 Welcome to JithendraGPT!</h3>
-        <p>Upload documents using the sidebar to start chatting with your AI assistant.</p>
-    </div>
-    """, unsafe_allow_html=True)
