@@ -10,7 +10,8 @@ A powerful Streamlit application that combines document processing, vector searc
 - 🎤 **Speech Input**: Voice-to-text functionality (when available)
 - 🔊 **Speech Output**: Text-to-speech responses
 - 🎛️ **Multiple AI Models**: Support for Groq and OpenAI models
-- 📊 **Persistent Storage**: Vector database for document embeddings
+- 📊 **Persistent Storage**: FAISS vector database for reliable cloud deployment
+- 🔄 **Fallback System**: Automatic fallback from FAISS to ChromaDB if needed
 
 ## Supported AI Models
 
@@ -136,6 +137,11 @@ Document-Insight-Engine/
 4. **Model Availability**
    - Some models may have rate limits or availability issues
    - Try switching to a different model if one is unavailable
+
+5. **Vector Store Issues**
+   - App automatically uses FAISS (recommended for cloud deployment)
+   - If you see ChromaDB errors, the app will fallback to FAISS
+   - FAISS is more reliable on Streamlit Cloud than ChromaDB
 
 ### Support
 

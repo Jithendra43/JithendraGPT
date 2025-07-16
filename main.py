@@ -4,6 +4,7 @@ import streamlit as st
 import dotenv
 import unicodedata
 from typing import Optional
+import pickle
 
 # ---- Try importing speech recognition with fallback ----
 try:
@@ -27,17 +28,24 @@ from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import UnstructuredFileLoader
 from langchain_text_splitters import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 
-# Try to import FAISS as backup vector store
+# Try to import vector stores with fallback priority
+VECTOR_STORE_TYPE = None
 try:
     from langchain_community.vectorstores import FAISS
-    FAISS_AVAILABLE = True
+    VECTOR_STORE_TYPE = "FAISS"
+    st.success("✅ Using FAISS vector store (recommended for cloud deployment)")
 except ImportError:
-    FAISS_AVAILABLE = False
+    try:
+        from langchain_chroma import Chroma
+        VECTOR_STORE_TYPE = "CHROMA"
+        st.info("Using ChromaDB vector store")
+    except ImportError:
+        st.error("❌ No vector store available. Please check your dependencies.")
+        st.stop()
 
 # ---- Load environment variables ----
 dotenv.load_dotenv()
@@ -69,7 +77,7 @@ if openai_api_key:
 # 1. Define Functions
 # -------------------------------------
 def setup_vectorstore(persist_directory: str = "vector_db_dir"):
-    """Setup vector store with error handling"""
+    """Setup vector store with FAISS priority and ChromaDB fallback"""
     if "vectorstore" not in st.session_state:
         try:
             # Initialize embeddings
@@ -78,34 +86,57 @@ def setup_vectorstore(persist_directory: str = "vector_db_dir"):
                 model_kwargs={'device': 'cpu'}
             )
             
-            # Try to initialize ChromaDB with better error handling
-            try:
-                st.session_state.vectorstore = Chroma(
-                    persist_directory=persist_directory, 
-                    embedding_function=embeddings
-                )
-            except Exception as chroma_error:
-                st.error(f"ChromaDB initialization failed: {str(chroma_error)}")
-                # Try alternative initialization
-                import chromadb
-                from chromadb.config import Settings
-                
-                client = chromadb.PersistentClient(
-                    path=persist_directory,
-                    settings=Settings(
-                        anonymized_telemetry=False,
-                        allow_reset=True
+            if VECTOR_STORE_TYPE == "FAISS":
+                # Try to load existing FAISS index
+                faiss_index_path = os.path.join(persist_directory, "faiss_index")
+                if os.path.exists(faiss_index_path + ".faiss") and os.path.exists(faiss_index_path + ".pkl"):
+                    try:
+                        st.session_state.vectorstore = FAISS.load_local(
+                            faiss_index_path, 
+                            embeddings, 
+                            allow_dangerous_deserialization=True
+                        )
+                        st.info("📂 Loaded existing FAISS vector database")
+                    except Exception as e:
+                        st.warning(f"Could not load existing FAISS index: {e}")
+                        # Create empty FAISS index
+                        st.session_state.vectorstore = None
+                else:
+                    # Create empty FAISS index - will be populated when documents are uploaded
+                    st.session_state.vectorstore = None
+                    st.info("📝 FAISS vector store ready - upload documents to begin")
+            
+            elif VECTOR_STORE_TYPE == "CHROMA":
+                # Fallback to ChromaDB
+                try:
+                    from langchain_chroma import Chroma
+                    st.session_state.vectorstore = Chroma(
+                        persist_directory=persist_directory, 
+                        embedding_function=embeddings
                     )
-                )
-                st.session_state.vectorstore = Chroma(
-                    client=client,
-                    embedding_function=embeddings
-                )
+                except Exception as chroma_error:
+                    st.error(f"ChromaDB initialization failed: {str(chroma_error)}")
+                    # Try alternative ChromaDB initialization
+                    import chromadb
+                    from chromadb.config import Settings
+                    
+                    client = chromadb.PersistentClient(
+                        path=persist_directory,
+                        settings=Settings(
+                            anonymized_telemetry=False,
+                            allow_reset=True
+                        )
+                    )
+                    st.session_state.vectorstore = Chroma(
+                        client=client,
+                        embedding_function=embeddings
+                    )
                 
         except Exception as e:
             st.error(f"Error setting up vector store: {str(e)}")
             st.info("Please try refreshing the page or contact support if the issue persists.")
             return None
+    
     return st.session_state.vectorstore
 
 def create_conversational_chain(vectorstore, model_choice, temperature=0.5, provider="groq"):
@@ -125,6 +156,10 @@ def create_conversational_chain(vectorstore, model_choice, temperature=0.5, prov
                 return None
             llm = ChatGroq(model=model_choice, temperature=temperature)
         
+        if vectorstore is None:
+            st.warning("⚠️ No vector store available. Please upload documents first.")
+            return None
+            
         retriever = vectorstore.as_retriever()
         memory = ConversationBufferMemory(
             memory_key="chat_history",
@@ -145,9 +180,10 @@ def create_conversational_chain(vectorstore, model_choice, temperature=0.5, prov
         return None
 
 def vectorize_new_documents(files, persist_directory="vector_db_dir"):
-    """Vectorize uploaded documents with error handling"""
+    """Vectorize uploaded documents with FAISS priority"""
     temp_folder = "temp_uploads"
     os.makedirs(temp_folder, exist_ok=True)
+    os.makedirs(persist_directory, exist_ok=True)
     
     try:
         saved_file_paths = []
@@ -171,29 +207,48 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
             model_kwargs={'device': 'cpu'}
         )
         
-        # Try to initialize ChromaDB with better error handling
-        try:
-            vectordb = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
-        except Exception as chroma_error:
-            st.error(f"ChromaDB initialization failed: {str(chroma_error)}")
-            # Try alternative initialization
-            import chromadb
-            from chromadb.config import Settings
+        if VECTOR_STORE_TYPE == "FAISS":
+            # Create or update FAISS index
+            faiss_index_path = os.path.join(persist_directory, "faiss_index")
             
-            client = chromadb.PersistentClient(
-                path=persist_directory,
-                settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True
+            if st.session_state.vectorstore is None:
+                # Create new FAISS index
+                vectordb = FAISS.from_documents(text_chunks, embeddings)
+            else:
+                # Add to existing FAISS index
+                vectordb = st.session_state.vectorstore
+                vectordb.add_documents(text_chunks)
+            
+            # Save FAISS index
+            vectordb.save_local(faiss_index_path)
+            return vectordb
+            
+        elif VECTOR_STORE_TYPE == "CHROMA":
+            # Fallback to ChromaDB
+            try:
+                from langchain_chroma import Chroma
+                vectordb = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+            except Exception as chroma_error:
+                st.error(f"ChromaDB initialization failed: {str(chroma_error)}")
+                # Try alternative ChromaDB initialization
+                import chromadb
+                from chromadb.config import Settings
+                
+                client = chromadb.PersistentClient(
+                    path=persist_directory,
+                    settings=Settings(
+                        anonymized_telemetry=False,
+                        allow_reset=True
+                    )
                 )
-            )
-            vectordb = Chroma(
-                client=client,
-                embedding_function=embeddings
-            )
-        
-        vectordb.add_documents(text_chunks)
-        return vectordb
+                vectordb = Chroma(
+                    client=client,
+                    embedding_function=embeddings
+                )
+            
+            vectordb.add_documents(text_chunks)
+            return vectordb
+            
     except Exception as e:
         st.error(f"Error vectorizing documents: {str(e)}")
         return None
@@ -243,6 +298,12 @@ st.set_page_config(
 
 st.markdown("<h1 style='text-align: center;'>JithendraGPT: AI-Powered Document Insight Engine</h1>", unsafe_allow_html=True)
 st.markdown("#### How can I assist you today?")
+
+# Display vector store status
+if VECTOR_STORE_TYPE:
+    st.sidebar.success(f"🔧 Vector Store: {VECTOR_STORE_TYPE}")
+else:
+    st.sidebar.error("❌ No vector store available")
 
 # Check for API keys
 if not groq_api_key and not openai_api_key:
@@ -294,7 +355,7 @@ if uploaded_files:
         result = vectorize_new_documents(uploaded_files, persist_directory="vector_db_dir")
         if result:
             st.sidebar.success("Documents successfully vectorized!")
-            st.session_state.pop("vectorstore", None)
+            st.session_state.vectorstore = result
             st.session_state.pop("conversational_chain", None)
 
 if st.sidebar.button("Clear Chat History"):
@@ -325,11 +386,8 @@ with col2:
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = setup_vectorstore(persist_directory="vector_db_dir")
 
-if st.session_state.vectorstore is None:
-    st.error("Failed to initialize vector store. Please check your configuration.")
-    st.stop()
-
-if (
+# Only create conversational chain if we have a vectorstore with documents
+if st.session_state.vectorstore is not None and (
     "conversational_chain" not in st.session_state 
     or st.session_state.get("current_temp") != temperature
     or st.session_state.get("selected_model") != model_choice
@@ -345,10 +403,6 @@ if (
         st.session_state.current_temp = temperature
         st.session_state.selected_model = model_choice
         st.session_state.selected_provider = model_provider
-
-if st.session_state.conversational_chain is None:
-    st.error("Failed to initialize conversational chain. Please check your API keys.")
-    st.stop()
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -373,6 +427,15 @@ elif input_mode == "Speech" and SPEECH_AVAILABLE:
         user_input = transcribe_speech()
 
 if user_input:
+    # Check if we have a conversational chain
+    if st.session_state.vectorstore is None:
+        st.error("📄 Please upload documents first to start chatting!")
+        st.stop()
+    
+    if "conversational_chain" not in st.session_state or st.session_state.conversational_chain is None:
+        st.error("🤖 AI model not initialized. Please check your API keys and try again.")
+        st.stop()
+    
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -398,3 +461,19 @@ if user_input:
             except Exception as e:
                 st.error(f"Error generating response: {str(e)}")
                 st.session_state.chat_history.append({"role": "assistant", "content": "I apologize, but I encountered an error while processing your request. Please try again."})
+
+# Show helpful message if no documents uploaded
+if st.session_state.vectorstore is None and not uploaded_files:
+    st.info("👋 Welcome to JithendraGPT! Please upload documents using the sidebar to get started.")
+    st.markdown("""
+    ### 📚 Supported File Types:
+    - PDF documents
+    - Word documents (DOCX)
+    - Text files (TXT)
+    - CSV files
+    
+    ### 🚀 How to Use:
+    1. Upload your documents using the sidebar
+    2. Wait for processing to complete
+    3. Start asking questions about your documents!
+    """)
