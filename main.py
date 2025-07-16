@@ -32,6 +32,25 @@ from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 
+# Import additional document loaders for fallback
+try:
+    from langchain_community.document_loaders import PyPDFLoader
+    PDF_LOADER_AVAILABLE = True
+except ImportError:
+    PDF_LOADER_AVAILABLE = False
+
+try:
+    from langchain_community.document_loaders import Docx2txtLoader
+    DOCX_LOADER_AVAILABLE = True
+except ImportError:
+    DOCX_LOADER_AVAILABLE = False
+
+try:
+    from langchain_community.document_loaders import CSVLoader
+    CSV_LOADER_AVAILABLE = True
+except ImportError:
+    CSV_LOADER_AVAILABLE = False
+
 # Try to import vector stores with fallback priority
 VECTOR_STORE_TYPE = None
 try:
@@ -182,8 +201,59 @@ def create_conversational_chain(vectorstore, model_choice, temperature=0.5, prov
         st.error(f"Error creating conversational chain: {str(e)}")
         return None
 
+def load_document_with_fallback(file_path):
+    """Load document with multiple fallback options"""
+    file_extension = os.path.splitext(file_path)[1].lower()
+    
+    # Try different loaders based on file type
+    loaders_to_try = []
+    
+    if file_extension == '.pdf':
+        if PDF_LOADER_AVAILABLE:
+            loaders_to_try.append(('PyPDFLoader', lambda: PyPDFLoader(file_path)))
+        loaders_to_try.append(('UnstructuredFileLoader', lambda: UnstructuredFileLoader(file_path)))
+    
+    elif file_extension == '.docx':
+        if DOCX_LOADER_AVAILABLE:
+            loaders_to_try.append(('Docx2txtLoader', lambda: Docx2txtLoader(file_path)))
+        loaders_to_try.append(('UnstructuredFileLoader', lambda: UnstructuredFileLoader(file_path)))
+    
+    elif file_extension == '.csv':
+        if CSV_LOADER_AVAILABLE:
+            loaders_to_try.append(('CSVLoader', lambda: CSVLoader(file_path)))
+        loaders_to_try.append(('UnstructuredFileLoader', lambda: UnstructuredFileLoader(file_path)))
+    
+    elif file_extension == '.txt':
+        # For text files, try to read directly first
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            from langchain.schema import Document
+            return [Document(page_content=content, metadata={"source": file_path})]
+        except:
+            loaders_to_try.append(('UnstructuredFileLoader', lambda: UnstructuredFileLoader(file_path)))
+    
+    else:
+        # Default to UnstructuredFileLoader for other file types
+        loaders_to_try.append(('UnstructuredFileLoader', lambda: UnstructuredFileLoader(file_path)))
+    
+    # Try each loader until one works
+    for loader_name, loader_func in loaders_to_try:
+        try:
+            loader = loader_func()
+            docs = loader.load()
+            if docs:  # Only return if we got actual documents
+                return docs
+        except Exception as e:
+            st.warning(f"Failed to load {os.path.basename(file_path)} with {loader_name}: {str(e)}")
+            continue
+    
+    # If all loaders fail, create a basic document with error message
+    st.error(f"Could not load {os.path.basename(file_path)}. Please check the file format.")
+    return []
+
 def vectorize_new_documents(files, persist_directory="vector_db_dir"):
-    """Vectorize uploaded documents with FAISS priority"""
+    """Vectorize uploaded documents with FAISS priority and comprehensive error handling"""
     temp_folder = "temp_uploads"
     os.makedirs(temp_folder, exist_ok=True)
     os.makedirs(persist_directory, exist_ok=True)
@@ -197,10 +267,30 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
             saved_file_paths.append(file_path)
         
         all_docs = []
+        successful_files = []
+        failed_files = []
+        
         for file_path in saved_file_paths:
-            loader = UnstructuredFileLoader(file_path)
-            docs = loader.load()
-            all_docs.extend(docs)
+            try:
+                docs = load_document_with_fallback(file_path)
+                if docs:
+                    all_docs.extend(docs)
+                    successful_files.append(os.path.basename(file_path))
+                else:
+                    failed_files.append(os.path.basename(file_path))
+            except Exception as e:
+                st.error(f"Error processing {os.path.basename(file_path)}: {str(e)}")
+                failed_files.append(os.path.basename(file_path))
+        
+        if not all_docs:
+            st.error("No documents could be processed successfully.")
+            return None
+        
+        # Display processing results
+        if successful_files:
+            st.success(f"✅ Successfully processed: {', '.join(successful_files)}")
+        if failed_files:
+            st.warning(f"⚠️ Failed to process: {', '.join(failed_files)}")
         
         text_splitter = CharacterTextSplitter(chunk_size=2000, chunk_overlap=500)
         text_chunks = text_splitter.split_documents(all_docs)
@@ -224,43 +314,65 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
             # Create or update FAISS index
             faiss_index_path = os.path.join(persist_directory, "faiss_index")
             
-            if st.session_state.vectorstore is None:
-                # Create new FAISS index
-                vectordb = FAISS.from_documents(text_chunks, embeddings)
-            else:
-                # Add to existing FAISS index
-                vectordb = st.session_state.vectorstore
-                vectordb.add_documents(text_chunks)
-            
-            # Save FAISS index
-            vectordb.save_local(faiss_index_path)
-            return vectordb
+            try:
+                if st.session_state.vectorstore is None:
+                    # Create new FAISS index
+                    vectordb = FAISS.from_documents(text_chunks, embeddings)
+                    st.info(f"📊 Created new FAISS index with {len(text_chunks)} chunks")
+                else:
+                    # Add to existing FAISS index
+                    vectordb = st.session_state.vectorstore
+                    vectordb.add_documents(text_chunks)
+                    st.info(f"📊 Added {len(text_chunks)} chunks to existing FAISS index")
+                
+                # Save FAISS index
+                vectordb.save_local(faiss_index_path)
+                return vectordb
+                
+            except Exception as faiss_error:
+                st.error(f"FAISS operation failed: {str(faiss_error)}")
+                # Try to create a simple FAISS index without advanced features
+                try:
+                    vectordb = FAISS.from_documents(text_chunks, embeddings)
+                    vectordb.save_local(faiss_index_path)
+                    st.warning("Created basic FAISS index (some features may be limited)")
+                    return vectordb
+                except Exception as simple_faiss_error:
+                    st.error(f"Failed to create even basic FAISS index: {str(simple_faiss_error)}")
+                    return None
             
         elif VECTOR_STORE_TYPE == "CHROMA":
             # Fallback to ChromaDB
             try:
                 from langchain_chroma import Chroma
                 vectordb = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+                vectordb.add_documents(text_chunks)
+                st.info(f"📊 Added {len(text_chunks)} chunks to ChromaDB")
+                return vectordb
             except Exception as chroma_error:
                 st.error(f"ChromaDB initialization failed: {str(chroma_error)}")
                 # Try alternative ChromaDB initialization
-                import chromadb
-                from chromadb.config import Settings
-                
-                client = chromadb.PersistentClient(
-                    path=persist_directory,
-                    settings=Settings(
-                        anonymized_telemetry=False,
-                        allow_reset=True
+                try:
+                    import chromadb
+                    from chromadb.config import Settings
+                    
+                    client = chromadb.PersistentClient(
+                        path=persist_directory,
+                        settings=Settings(
+                            anonymized_telemetry=False,
+                            allow_reset=True
+                        )
                     )
-                )
-                vectordb = Chroma(
-                    client=client,
-                    embedding_function=embeddings
-                )
-            
-            vectordb.add_documents(text_chunks)
-            return vectordb
+                    vectordb = Chroma(
+                        client=client,
+                        embedding_function=embeddings
+                    )
+                    vectordb.add_documents(text_chunks)
+                    st.info(f"📊 Added {len(text_chunks)} chunks to ChromaDB (alternative setup)")
+                    return vectordb
+                except Exception as alt_chroma_error:
+                    st.error(f"All ChromaDB methods failed: {str(alt_chroma_error)}")
+                    return None
             
     except Exception as e:
         st.error(f"Error vectorizing documents: {str(e)}")
@@ -274,6 +386,55 @@ def clear_chat_history():
 def clean_text(text):
     """Remove problematic Unicode characters to prevent encoding errors."""
     return "".join(c for c in text if unicodedata.category(c)[0] != "C")
+
+def validate_setup():
+    """Validate that all required components are working"""
+    issues = []
+    
+    # Check vector store
+    if VECTOR_STORE_TYPE is None:
+        issues.append("❌ No vector store available")
+    
+    # Check API keys
+    if not groq_api_key and not openai_api_key:
+        issues.append("❌ No API keys configured")
+    
+    # Check document loaders
+    loader_status = []
+    if PDF_LOADER_AVAILABLE:
+        loader_status.append("PDF ✅")
+    else:
+        loader_status.append("PDF ⚠️")
+    
+    if DOCX_LOADER_AVAILABLE:
+        loader_status.append("DOCX ✅")
+    else:
+        loader_status.append("DOCX ⚠️")
+    
+    if CSV_LOADER_AVAILABLE:
+        loader_status.append("CSV ✅")
+    else:
+        loader_status.append("CSV ⚠️")
+    
+    # Check speech capabilities
+    speech_status = []
+    if SPEECH_AVAILABLE:
+        speech_status.append("Input ✅")
+    else:
+        speech_status.append("Input ❌")
+    
+    if TTS_AVAILABLE:
+        speech_status.append("Output ✅")
+    else:
+        speech_status.append("Output ❌")
+    
+    return {
+        "issues": issues,
+        "vector_store": VECTOR_STORE_TYPE,
+        "loaders": loader_status,
+        "speech": speech_status,
+        "api_keys": "✅" if (groq_api_key or openai_api_key) else "❌"
+    }
 
 def transcribe_speech():
     """Transcribe speech with error handling"""
@@ -369,6 +530,26 @@ if uploaded_files:
 if st.sidebar.button("Clear Chat History"):
     clear_chat_history()
 
+# System Status
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔧 System Status")
+setup_status = validate_setup()
+
+if setup_status["issues"]:
+    for issue in setup_status["issues"]:
+        st.sidebar.error(issue)
+
+st.sidebar.markdown(f"**Vector Store:** {setup_status['vector_store']}")
+st.sidebar.markdown(f"**API Keys:** {setup_status['api_keys']}")
+
+with st.sidebar.expander("📄 Document Loaders"):
+    for loader in setup_status["loaders"]:
+        st.write(loader)
+
+with st.sidebar.expander("🎤 Speech Features"):
+    for speech in setup_status["speech"]:
+        st.write(speech)
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("Developed by **Jithendra Pavuluri**")
 
@@ -457,16 +638,39 @@ if user_input:
                 st.session_state.chat_history.append({"role": "assistant", "content": assistant_answer})
                 st.markdown(assistant_answer)
                 
+                # Show source documents if available
+                if "source_documents" in response and response["source_documents"]:
+                    with st.expander("📚 Source Documents"):
+                        for i, doc in enumerate(response["source_documents"][:3]):  # Show top 3 sources
+                            st.write(f"**Source {i+1}:** {doc.metadata.get('source', 'Unknown')}")
+                            st.write(f"*Content:* {doc.page_content[:200]}...")
+                
                 if output_mode == "Speech" and TTS_AVAILABLE:
                     try:
-                        tts = gTTS(assistant_answer)
+                        # Limit speech output to reasonable length
+                        speech_text = assistant_answer[:500] + "..." if len(assistant_answer) > 500 else assistant_answer
+                        tts = gTTS(speech_text)
                         buf = io.BytesIO()
                         tts.write_to_fp(buf)
                         buf.seek(0)
                         st.audio(buf, format="audio/mp3")
                     except Exception as e:
                         st.warning(f"Could not generate speech: {str(e)}")
+                        
             except Exception as e:
-                st.error(f"Error generating response: {str(e)}")
-                st.session_state.chat_history.append({"role": "assistant", "content": "I apologize, but I encountered an error while processing your request. Please try again."})
+                error_msg = str(e)
+                st.error(f"Error generating response: {error_msg}")
+                
+                # Provide helpful error messages based on error type
+                if "rate limit" in error_msg.lower():
+                    st.info("💡 You've hit the API rate limit. Please wait a moment and try again.")
+                elif "api key" in error_msg.lower():
+                    st.info("💡 Please check your API key in the app settings.")
+                elif "context length" in error_msg.lower():
+                    st.info("💡 Your question is too long. Please try a shorter question.")
+                else:
+                    st.info("💡 Please try rephrasing your question or check if your documents were uploaded correctly.")
+                
+                fallback_response = "I apologize, but I encountered an error while processing your request. Please try again with a different question."
+                st.session_state.chat_history.append({"role": "assistant", "content": fallback_response})
 
