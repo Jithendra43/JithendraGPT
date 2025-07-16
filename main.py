@@ -32,6 +32,13 @@ from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 
+# Try to import FAISS as backup vector store
+try:
+    from langchain_community.vectorstores import FAISS
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
+
 # ---- Load environment variables ----
 dotenv.load_dotenv()
 
@@ -65,10 +72,39 @@ def setup_vectorstore(persist_directory: str = "vector_db_dir"):
     """Setup vector store with error handling"""
     if "vectorstore" not in st.session_state:
         try:
-            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-            st.session_state.vectorstore = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+            # Initialize embeddings
+            embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                model_kwargs={'device': 'cpu'}
+            )
+            
+            # Try to initialize ChromaDB with better error handling
+            try:
+                st.session_state.vectorstore = Chroma(
+                    persist_directory=persist_directory, 
+                    embedding_function=embeddings
+                )
+            except Exception as chroma_error:
+                st.error(f"ChromaDB initialization failed: {str(chroma_error)}")
+                # Try alternative initialization
+                import chromadb
+                from chromadb.config import Settings
+                
+                client = chromadb.PersistentClient(
+                    path=persist_directory,
+                    settings=Settings(
+                        anonymized_telemetry=False,
+                        allow_reset=True
+                    )
+                )
+                st.session_state.vectorstore = Chroma(
+                    client=client,
+                    embedding_function=embeddings
+                )
+                
         except Exception as e:
             st.error(f"Error setting up vector store: {str(e)}")
+            st.info("Please try refreshing the page or contact support if the issue persists.")
             return None
     return st.session_state.vectorstore
 
@@ -130,8 +166,32 @@ def vectorize_new_documents(files, persist_directory="vector_db_dir"):
         text_splitter = CharacterTextSplitter(chunk_size=2000, chunk_overlap=500)
         text_chunks = text_splitter.split_documents(all_docs)
         
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        vectordb = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'}
+        )
+        
+        # Try to initialize ChromaDB with better error handling
+        try:
+            vectordb = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+        except Exception as chroma_error:
+            st.error(f"ChromaDB initialization failed: {str(chroma_error)}")
+            # Try alternative initialization
+            import chromadb
+            from chromadb.config import Settings
+            
+            client = chromadb.PersistentClient(
+                path=persist_directory,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
+            )
+            vectordb = Chroma(
+                client=client,
+                embedding_function=embeddings
+            )
+        
         vectordb.add_documents(text_chunks)
         return vectordb
     except Exception as e:
